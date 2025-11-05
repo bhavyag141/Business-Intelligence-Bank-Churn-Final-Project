@@ -1,0 +1,152 @@
+---
+title: "BankChurn_LogisticRegression"
+author: "Sarwat Rattani"
+date: "November 18th, 2024"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Code
+
+```{r}
+#Loading all packages
+library(readr)
+library(dplyr)
+library(caret)
+library(readxl)
+library(fastDummies)
+
+#csv file converted to excel before reading
+ChurnData = read_xlsx("ChurnData1.xlsx") 
+
+#view the fields and data type
+colnames(ChurnData)
+glimpse(ChurnData)
+
+#preprocess the variables
+
+ChurnData1 = ChurnData %>%
+                mutate(across(c(Gender, HasCrCard,IsActiveMember, Exited), as.factor))
+
+ChurnData1 = dummy_cols(ChurnData1, select_columns = "Geography", remove_first_dummy = TRUE)
+
+#first dummy for country "France" was removed - remember this is the default answer 
+
+ChurnData1 = ChurnData1 %>% 
+                    select (-CustomerId, -Surname)
+
+ChurnData1 = ChurnData1 %>% 
+    select (-Geography)
+
+glimpse(ChurnData1)
+
+#Check for missing values
+
+missing_values <- sapply(ChurnData1, function(x) sum(is.na(x)))
+
+print(missing_values) #no missing values 
+
+#Hybrid methods combine oversampling of the minority class with undersampling of the majority class. This approach
+#reduces the risk of overfitting and preserves the dataset’s size better than pure oversampling.
+
+library(ROSE)
+
+ChurnData_Balanced = ovun.sample(Exited ~ ., data = ChurnData1, method = "both", p = 0.5)$data
+
+str(ChurnData_Balanced)
+table(ChurnData_Balanced$Exited)
+
+
+#Now our dataset is balanced with 50-50 exited or not exited values
+
+ChurnData_Balanced %>%
+  as_tibble() %>%
+  glimpse()
+
+View(ChurnData_Balanced)
+
+# ------------------------------------LOGISTIC REGRESSION----------------------------------
+
+#define formula
+formula = Exited ~ CreditScore + Gender + Age + Tenure + Balance + NumOfProducts + HasCrCard + IsActiveMember +
+          EstimatedSalary + Geography_Germany + Geography_Spain 
+
+#train-test split
+
+set.seed(54)
+trainIndex = createDataPartition(ChurnData_Balanced$Exited,
+                                p = 0.8,
+                                list = FALSE,
+                                time = 1)
+ChurnTrain = ChurnData_Balanced[trainIndex, ]  
+ChurnTest = ChurnData_Balanced [-trainIndex, ]
+
+#build the logistic model 
+
+model = glm (formula, data = ChurnTrain, family = binomial)
+
+summary(model)
+
+#Model prediction on test data 
+
+ChurnTest$predicted_prob = predict(model, newdata = ChurnTest, type = "response")
+
+ChurnTest$predicted_class <- ifelse(ChurnTest$predicted_prob > 0.5, 1, 0)
+
+#model evaluation 
+logistic_CM = confusionMatrix(as.factor(ChurnTest$predicted_class),
+                as.factor(ChurnTest$Exited),
+                positive = "1")
+
+logistic_CM
+
+#final evaluation
+
+logisticR_precision = logistic_CM$byClass["Pos Pred Value"]
+logisticR_recall = logistic_CM$byClass["Sensitivity"]
+
+#model accuracy is 72.04%
+#recall is 69.8%
+#precision 73.4%
+```
+## Plot 
+
+```{r}
+#Visualize findings
+
+library(pROC)
+
+roc_curve = roc(ChurnTest$Exited, ChurnTest$predicted_prob)
+plot(roc_curve, main = "ROC Curve for Bank Churn Logistic Regression Model", col = "blue")
+
+auc(roc_curve)
+
+#The AUC of 0.7885 indicates that the model performs reasonably well but still has room for improvement
+
+library(ggplot2)
+ggplot(ChurnTest, aes(x = predicted_prob, fill = as.factor(Exited))) +
+  geom_histogram(bins = 30, position = "identity", alpha = 0.5) +
+  labs(title = "Predicted Probabilities", x = "Predicted Probability of Exiting", y = "Count") +
+  theme_minimal() +
+  scale_fill_manual(name = "Exited", values = c("red", "blue"), labels = c("No", "Yes"))
+
+#Precision-Recall Curve
+
+library(PRROC)
+pr <- pr.curve(scores.class0 = ChurnTest$predicted_prob, weights.class0 = as.numeric(as.character(ChurnTest$Exited)), curve = TRUE)
+plot(pr, main = "Precision-Recall Curve")
+
+# Coefficient Plot
+
+coeffs <- summary(model)$coefficients
+coeffs_df <- data.frame(Term = rownames(coeffs), Estimate = coeffs[, "Estimate"])
+ggplot(coeffs_df, aes(x = reorder(Term, Estimate), y = Estimate)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Logistic Regression Coefficients", x = "Predictors", y = "Coefficient Estimate") +
+  theme_minimal()
+```
+

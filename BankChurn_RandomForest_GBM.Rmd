@@ -1,0 +1,186 @@
+---
+title: "Project_Business_Intelligence"
+author: "Bhuvana Kamireddi"
+date: "2024-11-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(dplyr)
+library(tidyverse)
+library(fastDummies)
+library(caret)
+library(ROSE)
+library(readxl)
+library(randomForest)
+
+
+
+data1 <- read_csv("Churn_Modelling.csv")
+
+colnames(data1)
+glimpse(data1)
+# Convert categorical variables to factors (if they aren't already)
+data1 <- data1 %>%
+  mutate(across(c(Geography,Gender, HasCrCard,IsActiveMember, Exited), as.factor))
+
+str(data1)
+# Create dummy variables
+data1 <- dummy_cols(data1, select_columns = c("Geography", "Gender"), remove_first_dummy = TRUE)
+head(data1)
+data1 <- data1 %>%
+  select(-Geography_NA, -Geography, -Gender)
+glimpse(data1)
+
+#rename
+data1 <- data1 %>% rename(gender = Gender_Male)
+str(data1)
+
+#convering the new dummy variables to factors
+data1 <- data1 %>%
+  mutate(across(c(Geography_Germany, Geography_Spain, gender), as.factor))
+
+data1 <- data1 %>%
+  select(-CustomerId, -Surname)
+str(data1)
+
+
+# missing values 
+# Count missing values in each column
+missing_counts <- colSums(is.na(data1))
+
+# Display the count of missing values for each column
+missing_counts
+
+#total rows and coloumns
+cat("Rows:", nrow(data1), " Columns:", ncol(data1), "\n")
+
+#have one mossing value for age placing the value with meadian /mean
+data1$Age[is.na(data1$Age)] <- median(data1$Age, na.rm = TRUE)
+#For hascaed and isactive number placing them with mode
+mode_HasCrCard <- as.numeric(names(sort(table(data1$HasCrCard), decreasing = TRUE)[1]))
+data1$HasCrCard[is.na(data1$HasCrCard)] <- mode_HasCrCard
+
+mode_IsActiveMember <- as.numeric(names(sort(table(data1$IsActiveMember), decreasing = TRUE)[1]))
+data1$IsActiveMember[is.na(data1$IsActiveMember)] <- mode_IsActiveMember
+
+#assuming them as not from their respective countries
+data1$Geography_Germany[is.na(data1$Geography_Germany)] <- 0
+data1$Geography_Spain[is.na(data1$Geography_Spain)] <- 0
+
+#Looking at the total count of the churn classification
+as.data.frame(table(data1$Exited))
+glimpse(data1)
+
+missing_counts <- colSums(is.na(data1))
+missing_counts
+              
+#Balancing the data -churnded count is 20%
+#Hybrid methods combine oversampling of the minority class 
+#with undersampling of the majority class. This approach 
+#reduces the risk of overfitting and preserves the dataset’s 
+#size better than pure oversampling.
+data_balanced <- ovun.sample(Exited ~ ., data = data1, method = "both", p = 0.5)$data
+str(data_balanced)
+
+set.seed(123)
+
+# Create a 70-30 train-test split
+trainIndex <- createDataPartition(data_balanced$Exited, p = 0.7, list = FALSE)
+train_data <- data_balanced[trainIndex, ]
+test_data <- data_balanced[-trainIndex, ]
+
+cat("Training set rows:", nrow(train_data), " Testing set rows:", nrow(test_data), "\n")
+
+```
+
+
+```{r cars}
+#creating a random forest model and evaluating the rezults:
+
+set.seed(123)
+rf_model <- randomForest(Exited ~ ., data = train_data, ntree = 100, mtry = 3)
+
+# Print the model summary
+print(rf_model)
+
+# Make predictions on the test set
+rf_predictions <- predict(rf_model, test_data)
+
+# Evaluate the model performance
+confusion_mtx <- confusionMatrix(rf_predictions, test_data$Exited)
+
+# Print the confusion matrix and accuracy
+print(confusion_mtx)
+
+# Extracting specific metrics from the confusion matrix
+accuracy <- confusion_mtx$overall['Accuracy']
+sensitivity <- confusion_mtx$byClass['Sensitivity']
+precision <- confusion_mtx$byClass['Precision']
+
+# Print the metrics
+cat("Accuracy:", round(accuracy, 3), "\n")
+cat("Sensitivity (Recall):", round(sensitivity, 3), "\n")
+cat("Precision:", round(precision, 3), "\n")
+
+
+
+#Now fitting the model Gradient Boosting
+
+library(gbm)
+
+# Set the seed for reproducibility
+set.seed(123)
+
+
+
+#Gradient bpoosting only requires 
+
+
+train_data <- train_data %>%
+  mutate(across(c(Exited, HasCrCard, IsActiveMember, Geography_Germany, Geography_Spain, gender), ~ as.numeric(as.character(.))))
+test_data <- test_data %>%
+  mutate(across(c(Exited, HasCrCard, IsActiveMember, Geography_Germany, Geography_Spain, gender), ~ as.numeric(as.character(.))))
+
+
+
+# Fit a Gradient Boosting model
+gbm_model <- gbm(
+  formula = Exited ~ .,         # Model formula
+  distribution = "bernoulli",   # Type of distribution for binary response
+  data = train_data,            # Training data
+  n.trees = 1000,               # Number of trees
+  interaction.depth = 3,        # Maximum depth of each tree
+  shrinkage = 0.01,             # Learning rate
+  bag.fraction = 0.5,           # Proportion of data to be used for training each tree
+  train.fraction = 0.8,         # Proportion of data used for training
+  n.minobsinnode = 10,          # Minimum number of observations in the tree nodes
+  verbose = TRUE                 # Print progress
+)
+# Print the summary of the model
+summary(gbm_model)
+
+# Make predictions on the test set
+gbm_predictions <- predict(gbm_model, newdata = test_data, n.trees = 1000, type = "response")
+
+# Convert predictions to binary outcome (0 or 1) using a threshold
+gbm_pred_class <- ifelse(gbm_predictions > 0.5, 1, 0)
+
+# Evaluate the model performance
+confusion_mtx_gbm <- confusionMatrix(as.factor(gbm_pred_class), as.factor(test_data$Exited))
+
+# Print the confusion matrix and accuracy
+print(confusion_mtx_gbm)
+
+# Manually calculate Precision using the confusion matrix table
+tp <- confusion_mtx_gbm$table[2, 2]  # True Positives
+fp <- confusion_mtx_gbm$table[2, 1]  # False Positives
+precision_gbm <- tp / (tp + fp)
+
+# Print the metrics
+cat("Gradient Boosting Model Performance:\n")
+cat("Accuracy:", round(accuracy_gbm, 3), "\n")
+cat("Sensitivity (Recall):", round(sensitivity_gbm, 3), "\n")
+cat("Precision:", round(precision_gbm, 3), "\n")
+```
+
